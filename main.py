@@ -13,6 +13,8 @@ class MainWindow(QWidget):
         self.setWindowTitle("Token Manager")
         self.resize(1200, 800)
         self.table = TokenTableWidget()
+        self.table.horizontalHeader().setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.horizontalHeader().customContextMenuRequested.connect(self.show_header_menu)
 
         self.init_ui()
 
@@ -73,10 +75,30 @@ class MainWindow(QWidget):
     def save_file(self):
         self.table.save_data()
             
-
     def apply_filter(self):
         filter_text = self.filter_input.text()
         self.table.apply_filter(filter_text)
+
+    def show_header_menu(self, position):
+        header = self.table.horizontalHeader()
+        col = header.logicalIndexAt(position)
+        if col < 0:
+            return
+
+        menu = QMenu()
+        rename_action = menu.addAction("✏️ Renommer la colonne")
+        hide_action = menu.addAction("🙈 Masquer la colonne")
+        show_hidden_action = menu.addAction("👁️ Afficher les colonnes masquées...")
+
+        action = menu.exec_(header.mapToGlobal(position))
+
+        if action == rename_action:
+            self.table.rename_column(col)
+        elif action == hide_action:
+            self.table.hide_column(col)
+        elif action == show_hidden_action:
+            self.table.show_hidden_columns_menu()
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
