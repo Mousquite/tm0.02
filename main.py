@@ -1,8 +1,9 @@
 import sys
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QPushButton, QHBoxLayout,
-    QFileDialog, QLineEdit, QLabel, QComboBox
+    QFileDialog, QLineEdit, QLabel, QComboBox, QMenu
 )
+from PyQt5.QtCore import Qt
 from table_manager import TokenTableWidget
 import config
 from logger import logger
