@@ -68,14 +68,11 @@ class MainWindow(QWidget):
         self.setLayout(layout)
 
     def load_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Charger fichier Excel", "", "Excel Files (*.xlsx)")
-        if file_path:
-            self.table.load_file(file_path)
+        self.table.load_data()
 
     def save_file(self):
-        file_path, _ = QFileDialog.getSaveFileName(self, "Sauvegarder sous", "", "Excel Files (*.xlsx)")
-        if file_path:
-            self.table.save_file(file_path)
+        self.table.save_data()
+            
 
     def apply_filter(self):
         filter_text = self.filter_input.text()
