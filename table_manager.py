@@ -1,7 +1,7 @@
 # table_manager.py
 
 import pandas as pd
-from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem
+from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem, QInputDialog
 from PyQt5.QtCore import Qt
 
 from logger import logger
@@ -120,7 +120,8 @@ class TokenTableWidget(QTableWidget):
                     continue
                 item = self.item(row, col)
                 value = item.text() if item else ""
-                self.df.iat[row, col] = value if value != "" else None
+                self.df.iat[self.filtered_index[row], col] = value if value != "" else None
+
 
     # ========== VERROUILLAGE ========== #
     def lock_cell(self, row, col):
@@ -193,20 +194,22 @@ class TokenTableWidget(QTableWidget):
             logger.info(f"🗑️ Colonne '{column_name}' supprimée.")
             self.update_table_from_df()
 
-    def rename_column(self, old_name, new_name):
+    def rename_column(self, col):
         old_name = self.horizontalHeaderItem(col).text()
         new_name, ok = QInputDialog.getText(self, "Renommer la colonne", f"Nom actuel : {old_name}\nNouveau nom :")
-        if ok and new_name:
-            self.setHorizontalHeaderItem(col, QTableWidgetItem(new_name))
-            self.logger.info(f"Colonne renommée de '{old_name}' à '{new_name}'")
+        if ok and new_name and new_name != old_name:
+            self.backup()
+            self.df.rename(columns={old_name: new_name}, inplace=True)
+            logger.info(f"✏️ Colonne renommée de '{old_name}' à '{new_name}'")
+            self.update_table_from_df()
 
     def hide_column(self, col):
         self.setColumnHidden(col, True)
-        self.logger.info(f"Colonne {col} masquée")
+        logger.info(f"Colonne {col} masquée")
 
     def show_column(self, col):
         self.setColumnHidden(col, False)
-        self.logger.info(f"Colonne {col} affichée")
+        logger.info(f"Colonne {col} affichée")
 
     def show_hidden_columns_menu(self):
         hidden_columns = [
@@ -288,25 +291,23 @@ class TokenTableWidget(QTableWidget):
         self.update_table_from_df()
 
     def add_empty_row(self, index=None):
-        """
-        Ajoute une ligne vide à la fin ou à l'index donné.
-        """
-        row_count = self.rowCount()
-        insert_at = index if index is not None else row_count
-        self.insertRow(insert_at)
-
-        for col in range(self.columnCount()):
-            item = QTableWidgetItem("")
-            self.setItem(insert_at, col, item)
-
-        self.logger.info(f"Ligne vide ajoutée à l’index {insert_at}")
+        self.backup()
+        empty_row = pd.Series([None] * len(self.df.columns), index=self.df.columns)
+        if index is None or index >= len(self.df):
+            self.df = pd.concat([self.df, empty_row.to_frame().T], ignore_index=True)
+        else:
+            top = self.df.iloc[:index]
+            bottom = self.df.iloc[index:]
+            self.df = pd.concat([top, empty_row.to_frame().T, bottom], ignore_index=True)
+        logger.info(f"➕ Ligne vide insérée à l'index {index if index is not None else len(self.df)-1}")
+        self.update_table_from_df()
 
     def duplicate_row(self, index):
         """
         Duplique la ligne spécifiée.
         """
         if index < 0 or index >= self.rowCount():
-            self.logger.warning("Index de ligne invalide pour duplication.")
+            logger.warning("Index de ligne invalide pour duplication.")
             return
 
         new_index = index + 1
@@ -318,7 +319,7 @@ class TokenTableWidget(QTableWidget):
             new_item.setFlags(orig_item.flags() if orig_item else Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsEditable)
             self.setItem(new_index, col, new_item)
 
-        self.logger.info(f"Ligne {index} dupliquée à l’index {new_index}")
+        logger.info(f"Ligne {index} dupliquée à l’index {new_index}")
 
     def delete_selected_rows(self):
         """
@@ -329,7 +330,7 @@ class TokenTableWidget(QTableWidget):
 
         for row in selected_rows:
             self.removeRow(row)
-            self.logger.info(f"Ligne supprimée à l’index {row}")
+            logger.info(f"Ligne supprimée à l’index {row}")
 
     def add_column(self, name="Nouvelle colonne"):
         """
@@ -342,20 +343,20 @@ class TokenTableWidget(QTableWidget):
         for row in range(self.rowCount()):
             self.setItem(row, current_col_count, QTableWidgetItem(""))
 
-        self.logger.info(f"Nouvelle colonne ajoutée : {name}")
+        logger.info(f"Nouvelle colonne ajoutée : {name}")
 
     def delete_column(self, index):
         """
         Supprime la colonne spécifiée.
         """
         if index < 0 or index >= self.columnCount():
-            self.logger.warning("Index de colonne invalide pour suppression.")
+            logger.warning("Index de colonne invalide pour suppression.")
             return
 
         header = self.horizontalHeaderItem(index).text() if self.horizontalHeaderItem(index) else f"Colonne {index}"
         self.removeColumn(index)
 
-        self.logger.info(f"Colonne supprimée : {header} (index {index})")
+        logger.info(f"Colonne supprimée : {header} (index {index})")
 
     def lock_selected_cells(self):
         """
@@ -369,7 +370,7 @@ class TokenTableWidget(QTableWidget):
                 font.setBold(True)
                 item.setFont(font)
 
-        self.logger.info("Cellules sélectionnées verrouillées")
+        logger.info("Cellules sélectionnées verrouillées")
 
     def unlock_selected_cells(self):
         """
@@ -383,14 +384,14 @@ class TokenTableWidget(QTableWidget):
                 font.setBold(False)
                 item.setFont(font)
 
-        self.logger.info("Cellules sélectionnées déverrouillées")
+        logger.info("Cellules sélectionnées déverrouillées")
 
     def check_rows_from_selected_cells(self):
         """
         Coche les lignes associées aux cellules sélectionnées.
         """
         if self.checkbox_column is None:
-            self.logger.warning("Colonne de coche non définie.")
+            logger.warning("Colonne de coche non définie.")
             return
 
         rows = set(index.row() for index in self.selectedIndexes())
@@ -401,7 +402,7 @@ class TokenTableWidget(QTableWidget):
             else:
                 self.setItem(row, self.checkbox_column, QTableWidgetItem("✔️"))
 
-        self.logger.info(f"{len(rows)} ligne(s) cochée(s)")
+        logger.info(f"{len(rows)} ligne(s) cochée(s)")
 
     def copy_selected_cells(self):
         """
@@ -423,7 +424,7 @@ class TokenTableWidget(QTableWidget):
         clipboard = QApplication.clipboard()
         clipboard.setText(copied_text.strip())
 
-        self.logger.info("Cellules copiées dans le presse-papier")
+        logger.info("Cellules copiées dans le presse-papier")
 
     def clear_selected_cells(self):
         """
@@ -434,6 +435,6 @@ class TokenTableWidget(QTableWidget):
             if item and (item.flags() & Qt.ItemIsEditable):
                 item.setText("")
             else:
-                self.logger.debug(f"Cellule {index.row()}, {index.column()} non effacée (verrouillée ou vide)")
+                logger.debug(f"Cellule {index.row()}, {index.column()} non effacée (verrouillée ou vide)")
 
-        self.logger.info("Cellules sélectionnées effacées (si non verrouillées)")
+        logger.info("Cellules sélectionnées effacées (si non verrouillées)")
