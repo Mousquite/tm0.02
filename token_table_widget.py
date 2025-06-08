@@ -356,34 +356,6 @@ class TokenTableWidget(QTableWidget):
 
         logger.info(f"Colonne supprimée : {header} (index {index})")
 
-    def lock_selected_cells(self):
-        """
-        Verrouille les cellules sélectionnées (non modifiables, affichées en gras).
-        """
-        for index in self.selectedIndexes():
-            item = self.item(index.row(), index.column())
-            if item:
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                font = item.font()
-                font.setBold(True)
-                item.setFont(font)
-
-        logger.info("Cellules sélectionnées verrouillées")
-
-    def unlock_selected_cells(self):
-        """
-        Déverrouille les cellules sélectionnées (modifiables, police normale).
-        """
-        for index in self.selectedIndexes():
-            item = self.item(index.row(), index.column())
-            if item:
-                item.setFlags(item.flags() | Qt.ItemIsEditable)
-                font = item.font()
-                font.setBold(False)
-                item.setFont(font)
-
-        logger.info("Cellules sélectionnées déverrouillées")
-
     def check_rows_from_selected_cells(self):
         """
         Coche les lignes associées aux cellules sélectionnées.
@@ -488,7 +460,7 @@ class TokenTableWidget(QTableWidget):
         font = item.font()
         font.setBold(True)
         item.setFont(font)
-
+    
     def unlock_cell(self, row, column):
         item = self.item(row, column)
         if item:
@@ -496,6 +468,16 @@ class TokenTableWidget(QTableWidget):
             font = item.font()
             font.setBold(False)
             item.setFont(font)
+
+    def lock_selected_cells(self):
+        for index in self.selectedIndexes():
+            self.lock_cell(index.row(), index.column())
+        logger.info("Cellules sélectionnées verrouillées")
+
+    def unlock_selected_cells(self):
+        for index in self.selectedIndexes():
+            self.unlock_cell(index.row(), index.column())
+        logger.info("Cellules sélectionnées déverrouillées")
 
     def is_cell_locked(self, row, column):
         item = self.item(row, column)
