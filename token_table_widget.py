@@ -1,6 +1,7 @@
 from PyQt5.QtWidgets import QMenu, QInputDialog, QMessageBox, QTableWidgetItem, QTableWidget, QApplication
 from PyQt5.QtCore import Qt, QPoint
 import pandas as pd
+import ast 
 
 from logger import logger
 
@@ -29,58 +30,87 @@ class TokenTableWidget(QTableWidget):
         
     # ========== DATA MANAGEMENT ========== #
     def load_data(self):
-        """Chargement avec récupération des métadonnées depuis la feuille Metadata"""
         try:
-            # Charger les données
             with pd.ExcelFile("data.xlsx", engine='openpyxl') as xls:
-                #self.df = pd.read_excel(xls, sheet_name='Data')
-                self.df = pd.read_excel("data.xlsx")
-                # Charger les métadonnées si elles existent
+                self.df = pd.read_excel(xls, sheet_name='Data')
+                
                 if 'Metadata' in xls.sheet_names:
-                    #metadata_df = pd.read_excel(xls, sheet_name='Metadata')
-                    metadata_df = pd.read_excel("Metadata.xlsx")
+                    metadata_df = pd.read_excel(xls, sheet_name='Metadata')
+                    metadata = {}  # Initialisation ici
+                    
                     if not metadata_df.empty:
-                        metadata = metadata_df.to_dict(orient='records')[0]
-                        self.hidden_columns = set(metadata.get('hidden_columns', []))
-                        self.locked_cells = set(tuple(x) for x in metadata.get('locked_cells', []))
-                    else:
-                        self.hidden_columns = set()
-                        self.locked_cells = set()
+                        metadata = metadata_df.iloc[0].to_dict()
+                    
+                    # ✅ Conversion des chaînes en listes Python
+                    hidden_cols = metadata.get('hidden_columns', '[]')
+                    locked_cells = metadata.get('locked_cells', '[]')
+                    column_dtypes = metadata.get('column_dtypes', '{}')
+                    
+                    try:
+                        hidden_cols = ast.literal_eval(hidden_cols)
+                    except:
+                        hidden_cols = []
+                    
+                    try:
+                        locked_cells = ast.literal_eval(locked_cells)
+                    except:
+                        locked_cells = []
+                    
+                    try:
+                        column_dtypes = ast.literal_eval(column_dtypes)
+                    except:
+                        column_dtypes = {}# ✅ Appliquer les types de colonnes
+                    for col, dtype in column_dtypes.items():
+                        if col in self.df.columns:
+                            try:
+                                if dtype == 'object':
+                                    # Force le type object pour accepter les types mixtes
+                                    self.df[col] = self.df[col].astype('object')
+                                else:
+                                    self.df[col] = pd.to_numeric(self.df[col], errors='coerce')
+                            except:
+                                pass  # En cas d'erreur, garde le type actuel
+                    
+                    self.hidden_columns = set(hidden_cols) if isinstance(hidden_cols, list) else set()
+                    self.locked_cells = set(tuple(cell) for cell in locked_cells) if isinstance(locked_cells, list) else set()
                 else:
                     self.hidden_columns = set()
                     self.locked_cells = set()
             
-            # Mettre à jour l'affichage
             self.update_table_from_df()
-            
-            # Appliquer les colonnes masquées
             for col in self.hidden_columns:
                 if col < self.columnCount():
                     self.setColumnHidden(col, True)
+                
                     
             logger.info("✅ Données chargées avec métadonnées")
         except Exception as e:
             logger.error(f"❌ Erreur lors du chargement : {e}")
-    
+
     def save_data(self):
         try:
-            # Mettre à jour le DataFrame depuis la table
             self.update_df_from_table()
+            
+            if self.df.empty:
+                raise ValueError("Le DataFrame est vide. Impossible de sauvegarder.")
             
             # Préparer les métadonnées
             metadata = {
+                'column_dtypes': {col: str(dtype) for col, dtype in self.df.dtypes.items()},
                 'hidden_columns': list(self.hidden_columns),
                 'locked_cells': [list(cell) for cell in self.locked_cells]
             }
-            
-            # Convertir en DataFrame pour sauvegarde
             metadata_df = pd.DataFrame([metadata])
             
-            # Sauvegarder dans deux feuilles
+            # ✅ Vérification que les données sont valides
+            if metadata_df.empty:
+                raise ValueError("Les métadonnées sont vides. Impossible de sauvegarder.")
+            
+            # ✅ Écrire dans un seul fichier avec deux feuilles
             with pd.ExcelWriter("data.xlsx", engine='openpyxl') as writer:
                 self.df.to_excel(writer, sheet_name='Data', index=False)
                 metadata_df.to_excel(writer, sheet_name='Metadata', index=False)
-                
+            
             logger.info("💾 Données sauvegardées avec métadonnées")
         except Exception as e:
             logger.error(f"❌ Erreur lors de la sauvegarde : {e}")
@@ -173,18 +203,42 @@ class TokenTableWidget(QTableWidget):
         
         self.filtered_index = df.index.tolist()
 
+            
+            
+
     def update_df_from_table(self):
-        """
-        Met à jour le DataFrame à partir de la table (hors cases verrouillées).
-        """
         for row in range(self.rowCount()):
             for col in range(self.columnCount()):
-                if (row, col) in self.locked_cells:
-                    continue
+                df_row = self.filtered_index[row] if hasattr(self, 'filtered_index') and row < len(self.filtered_index) else row
+                
                 item = self.item(row, col)
                 value = item.text() if item else ""
-                self.df.iat[self.filtered_index[row], col] = value if value != "" else None
-
+                
+                if value == "":
+                    self.df.iat[df_row, col] = None
+                else:
+                    col_name = self.df.columns[col]
+                    current_dtype = str(self.df[col_name].dtype)
+                    
+                    if current_dtype == 'object':
+                        # ✅ Garde la valeur telle quelle pour les colonnes mixtes
+                        self.df.iat[df_row, col] = value
+                    else:
+                        # ✅ Conversion selon le type attendu
+                        try:
+                            if current_dtype == 'int64':
+                                self.df.iat[df_row, col] = int(value)
+                            elif current_dtype == 'float64':
+                                self.df.iat[df_row, col] = float(value)
+                            elif current_dtype == 'bool':
+                                self.df.iat[df_row, col] = value.lower() in ('true', '1', 'yes')
+                            else:
+                                self.df.iat[df_row, col] = value
+                        except ValueError:
+                            # ✅ Conversion impossible : force le type object
+                            self.df[col_name] = self.df[col_name].astype('object')
+                            self.df.iat[df_row, col] = value
+                        
     # ========== VERROUILLAGE ========== #
     def lock_cell(self, row, col):
         """Verrouille une cellule en utilisant l'index original du DataFrame"""
@@ -202,7 +256,6 @@ class TokenTableWidget(QTableWidget):
             font = item.font()
             font.setBold(True)
             item.setFont(font)
-
 
     def unlock_cell(self, row, col):
         """Déverrouille une cellule en utilisant l'index original du DataFrame"""
@@ -625,3 +678,19 @@ class TokenTableWidget(QTableWidget):
         name, ok = QInputDialog.getText(self, "Ajouter une colonne", "Nom de la nouvelle colonne :")
         if ok and name:
             self.add_column(name)  # Utilise la méthode synchronisée
+
+    def cellChanged(self, row, col):
+        col_name = self.df.columns[col]
+        current_dtype = str(self.df[col_name].dtype)
+        
+        if current_dtype != 'object':
+            item = self.item(row, col)
+            value = item.text() if item else ""
+            
+            try:
+                if current_dtype == 'int64':
+                    int(value)
+                elif current_dtype == 'float64':
+                    float(value)
+            except ValueError:
+                logger.warning(f"⚠️ La colonne '{col_name}' sera convertie en type 'object' pour accepter les valeurs mixtes.")
