@@ -17,9 +17,9 @@ class TokenTableWidget(QTableWidget):
         self.active_filter = None
         self.filtered_index = []
         self.hidden_columns = set()  # Stockage persistant des colonnes masquées
-        self.locked_cells = set()  # Utiliser des coordonnées DataFrame (index, col)
 
         self.setup_table()
+
 
     # ========== SETUP ========== #
     def setup_table(self):
@@ -29,14 +29,26 @@ class TokenTableWidget(QTableWidget):
         
     # ========== DATA MANAGEMENT ========== #
     def load_data(self):
-        """Chargement avec récupération des métadonnées"""
+        """Chargement avec récupération des métadonnées depuis la feuille Metadata"""
         try:
             # Charger les données
-            self.df = pd.read_excel("data.xlsx")
-            
-            # Récupérer les métadonnées
-            self.hidden_columns = set(self.df.attrs.get('hidden_columns', []))
-            self.locked_cells = set(tuple(x) for x in self.df.attrs.get('locked_cells', []))
+            with pd.ExcelFile("data.xlsx", engine='openpyxl') as xls:
+                #self.df = pd.read_excel(xls, sheet_name='Data')
+                self.df = pd.read_excel("data.xlsx")
+                # Charger les métadonnées si elles existent
+                if 'Metadata' in xls.sheet_names:
+                    #metadata_df = pd.read_excel(xls, sheet_name='Metadata')
+                    metadata_df = pd.read_excel("Metadata.xlsx")
+                    if not metadata_df.empty:
+                        metadata = metadata_df.to_dict(orient='records')[0]
+                        self.hidden_columns = set(metadata.get('hidden_columns', []))
+                        self.locked_cells = set(tuple(x) for x in metadata.get('locked_cells', []))
+                    else:
+                        self.hidden_columns = set()
+                        self.locked_cells = set()
+                else:
+                    self.hidden_columns = set()
+                    self.locked_cells = set()
             
             # Mettre à jour l'affichage
             self.update_table_from_df()
@@ -49,19 +61,26 @@ class TokenTableWidget(QTableWidget):
             logger.info("✅ Données chargées avec métadonnées")
         except Exception as e:
             logger.error(f"❌ Erreur lors du chargement : {e}")
-
+    
     def save_data(self):
-        """Sauvegarde avec gestion des métadonnées"""
         try:
             # Mettre à jour le DataFrame depuis la table
             self.update_df_from_table()
             
-            # Ajouter les métadonnées dans un attribut spécial
-            self.df.attrs['hidden_columns'] = list(self.hidden_columns)
-            self.df.attrs['locked_cells'] = list(self.locked_cells)
+            # Préparer les métadonnées
+            metadata = {
+                'hidden_columns': list(self.hidden_columns),
+                'locked_cells': [list(cell) for cell in self.locked_cells]
+            }
             
-            # Sauvegarder avec pandas
-            self.df.to_excel("data.xlsx", index=False)
+            # Convertir en DataFrame pour sauvegarde
+            metadata_df = pd.DataFrame([metadata])
+            
+            # Sauvegarder dans deux feuilles
+            with pd.ExcelWriter("data.xlsx", engine='openpyxl') as writer:
+                self.df.to_excel(writer, sheet_name='Data', index=False)
+                metadata_df.to_excel(writer, sheet_name='Metadata', index=False)
+                
             logger.info("💾 Données sauvegardées avec métadonnées")
         except Exception as e:
             logger.error(f"❌ Erreur lors de la sauvegarde : {e}")
@@ -169,12 +188,14 @@ class TokenTableWidget(QTableWidget):
     # ========== VERROUILLAGE ========== #
     def lock_cell(self, row, col):
         """Verrouille une cellule en utilisant l'index original du DataFrame"""
-        # Convertir les coordonnées de la table en coordonnées du DataFrame
+        # Conversion correcte de l'indice de la table vers le DataFrame
         df_row = self.filtered_index[row] if hasattr(self, 'filtered_index') and row < len(self.filtered_index) else row
-        df_col = col  # Les colonnes sont toujours en index relatif dans self.locked_cells
+        df_col = col  # Les colonnes sont stockées en index relatif
         
+        # Stockage dans self.locked_cells avec les indices du DataFrame
         self.locked_cells.add((df_row, df_col))
         
+        # Mise à jour visuelle
         item = self.item(row, col)
         if item:
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -587,7 +608,7 @@ class TokenTableWidget(QTableWidget):
         for index in self.selectedIndexes():
             self.unlock_cell(index.row(), index.column())
         logger.info(f"🔓 {len(self.selectedIndexes())} cellules déverrouillées")
-        
+
     def is_cell_locked(self, row, column):
         item = self.item(row, column)
         return item and not (item.flags() & Qt.ItemIsEditable)
