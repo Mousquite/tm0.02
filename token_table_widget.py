@@ -16,6 +16,8 @@ class TokenTableWidget(QTableWidget):
         self.locked_cells = set()  # (row, col)
         self.active_filter = None
         self.filtered_index = []
+        self.hidden_columns = set()  # Stockage persistant des colonnes masquées
+        self.locked_cells = set()  # Utiliser des coordonnées DataFrame (index, col)
 
         self.setup_table()
 
@@ -27,24 +29,40 @@ class TokenTableWidget(QTableWidget):
         
     # ========== DATA MANAGEMENT ========== #
     def load_data(self):
-        """
-        Chargement automatique depuis un fichier CSV ou Excel.
-        """
+        """Chargement avec récupération des métadonnées"""
         try:
-            self.df = pd.read_excel("data.xlsx")  # ou CSV si tu préfères
+            # Charger les données
+            self.df = pd.read_excel("data.xlsx")
+            
+            # Récupérer les métadonnées
+            self.hidden_columns = set(self.df.attrs.get('hidden_columns', []))
+            self.locked_cells = set(tuple(x) for x in self.df.attrs.get('locked_cells', []))
+            
+            # Mettre à jour l'affichage
             self.update_table_from_df()
-            logger.info("✅ Données chargées depuis le fichier.")
+            
+            # Appliquer les colonnes masquées
+            for col in self.hidden_columns:
+                if col < self.columnCount():
+                    self.setColumnHidden(col, True)
+                    
+            logger.info("✅ Données chargées avec métadonnées")
         except Exception as e:
-            logger.error(f"❌ Erreur lors du chargement des données : {e}")
+            logger.error(f"❌ Erreur lors du chargement : {e}")
 
     def save_data(self):
-        """
-        Sauvegarde manuelle dans Excel.
-        """
+        """Sauvegarde avec gestion des métadonnées"""
         try:
+            # Mettre à jour le DataFrame depuis la table
             self.update_df_from_table()
+            
+            # Ajouter les métadonnées dans un attribut spécial
+            self.df.attrs['hidden_columns'] = list(self.hidden_columns)
+            self.df.attrs['locked_cells'] = list(self.locked_cells)
+            
+            # Sauvegarder avec pandas
             self.df.to_excel("data.xlsx", index=False)
-            logger.info("💾 Données sauvegardées.")
+            logger.info("💾 Données sauvegardées avec métadonnées")
         except Exception as e:
             logger.error(f"❌ Erreur lors de la sauvegarde : {e}")
 
@@ -95,24 +113,45 @@ class TokenTableWidget(QTableWidget):
     # ========== TABLE <-> DF SYNCHRONISATION ========== #
     def update_table_from_df(self):
         """
-        Affiche le DataFrame dans la table, selon le filtre actif.
+        Affiche le DataFrame dans la table, selon le filtre actif,
+        en préservant les états (verrouillage, visibilité)
         """
+        # Sauvegarder l'état actuel
+        prev_filter = self.active_filter
+        prev_hidden = self.hidden_columns.copy()
+        prev_locked = self.locked_cells.copy()
+        
+        # Réinitialiser la table
         self.setRowCount(0)
         self.setColumnCount(0)
-
+        
+        # Appliquer le filtre
         df = self.apply_active_filter(self.df)
-
+        
+        # Configurer la table
         self.setColumnCount(len(df.columns))
         self.setHorizontalHeaderLabels(df.columns)
-
         self.setRowCount(len(df))
+        
+        # Remplir les cellules
         for row in range(len(df)):
             for col, value in enumerate(df.iloc[row]):
                 item = QTableWidgetItem(str(value) if pd.notna(value) else "")
-                if (row, col) in self.locked_cells:
+                
+                # Appliquer le verrouillage
+                df_row = self.filtered_index[row] if hasattr(self, 'filtered_index') and row < len(self.filtered_index) else row
+                if (df_row, col) in self.locked_cells:
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                    
                 self.setItem(row, col, item)
-
+        
+        # Restaurer la visibilité des colonnes
+        for col in range(len(df.columns)):
+            self.setColumnHidden(col, col in self.hidden_columns)
+        
         self.filtered_index = df.index.tolist()
 
     def update_df_from_table(self):
@@ -130,8 +169,11 @@ class TokenTableWidget(QTableWidget):
     # ========== VERROUILLAGE ========== #
     def lock_cell(self, row, col):
         """Verrouille une cellule en utilisant l'index original du DataFrame"""
-        original_index = self.filtered_index[row] if hasattr(self, 'filtered_index') and row < len(self.filtered_index) else row
-        self.locked_cells.add((original_index, col))
+        # Convertir les coordonnées de la table en coordonnées du DataFrame
+        df_row = self.filtered_index[row] if hasattr(self, 'filtered_index') and row < len(self.filtered_index) else row
+        df_col = col  # Les colonnes sont toujours en index relatif dans self.locked_cells
+        
+        self.locked_cells.add((df_row, df_col))
         
         item = self.item(row, col)
         if item:
@@ -140,10 +182,13 @@ class TokenTableWidget(QTableWidget):
             font.setBold(True)
             item.setFont(font)
 
+
     def unlock_cell(self, row, col):
         """Déverrouille une cellule en utilisant l'index original du DataFrame"""
-        original_index = self.filtered_index[row] if hasattr(self, 'filtered_index') and row < len(self.filtered_index) else row
-        self.locked_cells.discard((original_index, col))
+        df_row = self.filtered_index[row] if hasattr(self, 'filtered_index') and row < len(self.filtered_index) else row
+        df_col = col
+        
+        self.locked_cells.discard((df_row, df_col))
         
         item = self.item(row, col)
         if item:
@@ -214,11 +259,36 @@ class TokenTableWidget(QTableWidget):
             self.update_table_from_df()
 
     def delete_column(self, column_name):
-        """Supprime une colonne du DataFrame"""
+        """Supprime une colonne du DataFrame ET de l'affichage"""
         if column_name in self.df.columns:
+            col_idx = self.df.columns.get_loc(column_name)
+            
+            # Sauvegarder l'état
             self.backup()
+            
+            # Supprimer du DataFrame
             self.df.drop(columns=[column_name], inplace=True)
-            logger.info(f"🗑️ Colonne '{column_name}' supprimée.")
+            
+            # Mettre à jour les positions des cellules verrouillées
+            col_pos = self.df.columns.tolist().index(column_name)
+            new_locked = set()
+            for row, col in self.locked_cells:
+                if col < col_pos:
+                    new_locked.add((row, col))
+                elif col > col_pos:
+                    new_locked.add((row, col-1))
+            self.locked_cells = new_locked
+            
+            # Mettre à jour les colonnes masquées
+            new_hidden = set()
+            for col in self.hidden_columns:
+                if col < col_pos:
+                    new_hidden.add(col)
+                elif col > col_pos:
+                    new_hidden.add(col-1)
+            self.hidden_columns = new_hidden
+            
+            logger.info(f"🗑️ Colonne '{column_name}' supprimée")
             self.update_table_from_df()
 
     def rename_column(self, col):
@@ -231,12 +301,16 @@ class TokenTableWidget(QTableWidget):
             self.update_table_from_df()
 
     def hide_column(self, col):
+        """Masque une colonne avec gestion persistante"""
         self.setColumnHidden(col, True)
-        logger.info(f"Colonne {col} masquée")
+        self.hidden_columns.add(col)
+        logger.info(f"👁️ Colonne {col} masquée")
 
     def show_column(self, col):
+        """Affiche une colonne avec gestion persistante"""
         self.setColumnHidden(col, False)
-        logger.info(f"Colonne {col} affichée")
+        self.hidden_columns.discard(col)
+        logger.info(f"👁️ Colonne {col} affichée")
 
     def show_hidden_columns_menu(self):
         hidden_columns = [
@@ -256,7 +330,14 @@ class TokenTableWidget(QTableWidget):
             col_num = int(selected.split("col")[-1].strip(")"))
             self.show_column(col_num)
 
-
+    def toggle_column_visibility(self, col):
+        """Bascule l'état de visibilité d'une colonne"""
+        self.setColumnHidden(col, not self.isColumnHidden(col))
+        if self.isColumnHidden(col):
+            self.hidden_columns.add(col)
+        else:
+            self.hidden_columns.discard(col)
+            
     # ========== TRI & DEPLACEMENT DE COLONNES ========== #
     def move_column(self, from_index, to_index):
         cols = list(self.df.columns)
@@ -463,34 +544,50 @@ class TokenTableWidget(QTableWidget):
         new_item.setBackground(item.background())
         return new_item
 
-    def lock_cell(self, row, column):
-        item = self.item(row, column)
-        if not item:
-            item = QTableWidgetItem()
-            self.setItem(row, column, item)
-        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+    # ========== GESTION DES CELLULES VERROUILLÉES ========== #
+    def lock_cell(self, row, col):
+        """Verrouille une cellule et met à jour l'état de verrouillage"""
+        df_row = self.filtered_index[row] if hasattr(self, 'filtered_index') and row < len(self.filtered_index) else row
+        
+        # Mise à jour de l'état interne
+        self.locked_cells.add((df_row, col))
+        
+        # Création de l'item si nécessaire
+        if not self.item(row, col):
+            self.setItem(row, col, QTableWidgetItem(""))
+            
+        item = self.item(row, col)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         font = item.font()
         font.setBold(True)
         item.setFont(font)
-    
-    def unlock_cell(self, row, column):
-        item = self.item(row, column)
+
+    def unlock_cell(self, row, col):
+        """Déverrouille une cellule et met à jour l'état de verrouillage"""
+        df_row = self.filtered_index[row] if hasattr(self, 'filtered_index') and row < len(self.filtered_index) else row
+        
+        # Mise à jour de l'état interne
+        self.locked_cells.discard((df_row, col))
+        
+        item = self.item(row, col)
         if item:
-            item.setFlags(item.flags() | Qt.ItemIsEditable)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
             font = item.font()
             font.setBold(False)
             item.setFont(font)
 
     def lock_selected_cells(self):
+        """Verrouille toutes les cellules sélectionnées"""
         for index in self.selectedIndexes():
             self.lock_cell(index.row(), index.column())
-        logger.info("Cellules sélectionnées verrouillées")
+        logger.info(f"🔒 {len(self.selectedIndexes())} cellules verrouillées")
 
     def unlock_selected_cells(self):
+        """Déverrouille toutes les cellules sélectionnées"""
         for index in self.selectedIndexes():
             self.unlock_cell(index.row(), index.column())
-        logger.info("Cellules sélectionnées déverrouillées")
-
+        logger.info(f"🔓 {len(self.selectedIndexes())} cellules déverrouillées")
+        
     def is_cell_locked(self, row, column):
         item = self.item(row, column)
         return item and not (item.flags() & Qt.ItemIsEditable)
