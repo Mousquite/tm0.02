@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QMenu, QInputDialog, QMessageBox, QTableWidgetItem, QTableWidget
+from PyQt5.QtWidgets import QMenu, QInputDialog, QMessageBox, QTableWidgetItem, QTableWidget, QApplication
 from PyQt5.QtCore import Qt, QPoint
 import pandas as pd
 
@@ -62,10 +62,16 @@ class TokenTableWidget(QTableWidget):
 
     # ========== UNDO / REDO ========== #
     def undo(self):
+        """Annulation avec préservation du filtre actif"""
         if self.history:
             self.redo_stack.append(self.df.copy())
             self.df = self.history.pop()
+            
+            # Conserver le filtre actif
+            active_filter = self.active_filter
             self.update_table_from_df()
+            self.active_filter = active_filter
+            
             logger.info("↩️ Undo effectué.")
         else:
             logger.warning("⚠️ Aucun historique pour undo.")
@@ -123,16 +129,28 @@ class TokenTableWidget(QTableWidget):
 
     # ========== VERROUILLAGE ========== #
     def lock_cell(self, row, col):
-        self.locked_cells.add((row, col))
+        """Verrouille une cellule en utilisant l'index original du DataFrame"""
+        original_index = self.filtered_index[row] if hasattr(self, 'filtered_index') and row < len(self.filtered_index) else row
+        self.locked_cells.add((original_index, col))
+        
         item = self.item(row, col)
         if item:
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            font = item.font()
+            font.setBold(True)
+            item.setFont(font)
 
     def unlock_cell(self, row, col):
-        self.locked_cells.discard((row, col))
+        """Déverrouille une cellule en utilisant l'index original du DataFrame"""
+        original_index = self.filtered_index[row] if hasattr(self, 'filtered_index') and row < len(self.filtered_index) else row
+        self.locked_cells.discard((original_index, col))
+        
         item = self.item(row, col)
         if item:
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            font = item.font()
+            font.setBold(False)
+            item.setFont(font)
 
     # ========== FILTRAGE ========== #
     def apply_active_filter(self, df):
@@ -163,14 +181,23 @@ class TokenTableWidget(QTableWidget):
         return self.df.index[self.df['✔️'] == True].tolist()
     
     # ========== AJOUT / SUPPRESSION DE LIGNES & COLONNES ========== #
-    def add_row(self):
+    def add_row(self, index=None):
+        """Ajoute une ligne au DataFrame avec gestion de l'index"""
         self.backup()
         empty_row = pd.Series([None] * len(self.df.columns), index=self.df.columns)
-        self.df = pd.concat([self.df, empty_row.to_frame().T], ignore_index=True)
-        logger.info("➕ Ligne ajoutée.")
+        
+        if index is None or index >= len(self.df):
+            self.df = pd.concat([self.df, empty_row.to_frame().T], ignore_index=True)
+        else:
+            top = self.df.iloc[:index]
+            bottom = self.df.iloc[index:]
+            self.df = pd.concat([top, empty_row.to_frame().T, bottom], ignore_index=True)
+        
+        logger.info(f"➕ Ligne ajoutée à l'index {index if index is not None else len(self.df)-1}")
         self.update_table_from_df()
 
     def delete_row(self, row_idx):
+        """Supprime une ligne du DataFrame"""
         if 0 <= row_idx < len(self.df):
             self.backup()
             self.df.drop(index=self.filtered_index[row_idx], inplace=True)
@@ -179,6 +206,7 @@ class TokenTableWidget(QTableWidget):
             self.update_table_from_df()
 
     def add_column(self, column_name, default_value=None):
+        """Ajoute une colonne au DataFrame"""
         if column_name not in self.df.columns:
             self.backup()
             self.df[column_name] = default_value
@@ -186,6 +214,7 @@ class TokenTableWidget(QTableWidget):
             self.update_table_from_df()
 
     def delete_column(self, column_name):
+        """Supprime une colonne du DataFrame"""
         if column_name in self.df.columns:
             self.backup()
             self.df.drop(columns=[column_name], inplace=True)
@@ -288,60 +317,43 @@ class TokenTableWidget(QTableWidget):
         logger.info(f"☑️ {len(self.filtered_index)} lignes cochées.")
         self.update_table_from_df()
 
-    def add_empty_row(self, index=None):
-        self.backup()
-        empty_row = pd.Series([None] * len(self.df.columns), index=self.df.columns)
-        if index is None or index >= len(self.df):
-            self.df = pd.concat([self.df, empty_row.to_frame().T], ignore_index=True)
-        else:
-            top = self.df.iloc[:index]
-            bottom = self.df.iloc[index:]
-            self.df = pd.concat([top, empty_row.to_frame().T, bottom], ignore_index=True)
-        logger.info(f"➕ Ligne vide insérée à l'index {index if index is not None else len(self.df)-1}")
-        self.update_table_from_df()
-
     def duplicate_row(self, index):
-        """
-        Duplique la ligne spécifiée.
-        """
-        if index < 0 or index >= self.rowCount():
+        """Duplique une ligne dans le DataFrame"""
+        if index < 0 or index >= len(self.df):
             logger.warning("Index de ligne invalide pour duplication.")
             return
 
-        new_index = index + 1
-        self.insertRow(new_index)
-
-        for col in range(self.columnCount()):
-            orig_item = self.item(index, col)
-            new_item = QTableWidgetItem(orig_item.text() if orig_item else "")
-            new_item.setFlags(orig_item.flags() if orig_item else Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsEditable)
-            self.setItem(new_index, col, new_item)
-
-        logger.info(f"Ligne {index} dupliquée à l’index {new_index}")
+        self.backup()
+        row_data = self.df.iloc[index].copy()
+        self.df = pd.concat([
+            self.df.iloc[:index+1], 
+            pd.DataFrame([row_data]), 
+            self.df.iloc[index+1:]
+        ], ignore_index=True)
+        
+        logger.info(f"📄 Ligne {index} dupliquée à l'index {index+1}")
+        self.update_table_from_df()
 
     def delete_selected_rows(self):
-        """
-        Supprime toutes les lignes sélectionnées (une seule fois même si plusieurs cellules par ligne sont sélectionnées).
-        """
+        """Supprime les lignes sélectionnées en synchronisant avec le DataFrame"""
         selected_indexes = self.selectedIndexes()
-        selected_rows = sorted(set(index.row() for index in selected_indexes), reverse=True)
-
-        for row in selected_rows:
-            self.removeRow(row)
-            logger.info(f"Ligne supprimée à l’index {row}")
-
-    def add_column(self, name="Nouvelle colonne"):
-        """
-        Ajoute une nouvelle colonne avec un nom personnalisé.
-        """
-        current_col_count = self.columnCount()
-        self.insertColumn(current_col_count)
-        self.setHorizontalHeaderItem(current_col_count, QTableWidgetItem(name))
-
-        for row in range(self.rowCount()):
-            self.setItem(row, current_col_count, QTableWidgetItem(""))
-
-        logger.info(f"Nouvelle colonne ajoutée : {name}")
+        if not selected_indexes:
+            return
+        
+        # Obtenir les indices originaux du DataFrame
+        selected_rows = sorted(set(
+            self.filtered_index[index.row()] 
+            if hasattr(self, 'filtered_index') and index.row() < len(self.filtered_index)
+            else index.row()
+            for index in selected_indexes
+        ), reverse=True)
+        
+        self.backup()
+        self.df.drop(index=selected_rows, inplace=True)
+        self.df.reset_index(drop=True, inplace=True)
+        
+        logger.info(f"🗑️ {len(selected_rows)} lignes sélectionnées supprimées")
+        self.update_table_from_df()
 
     def delete_column(self, index):
         """
@@ -419,7 +431,7 @@ class TokenTableWidget(QTableWidget):
         menu = QMenu(self)
 
         # Gestion des lignes
-        menu.addAction("➕ Ajouter une ligne vide", lambda: self.add_empty_row(index.row()))
+        menu.addAction("➕ Ajouter une ligne vide", lambda: self.add_row(index.row()))
         menu.addAction("📄 Dupliquer la ligne", lambda: self.duplicate_row(index.row()))
         menu.addAction("🗑️ Supprimer les lignes sélectionnées", self.delete_selected_rows)
 
@@ -491,6 +503,7 @@ class TokenTableWidget(QTableWidget):
         check_item.setCheckState(Qt.Checked)
 
     def prompt_add_column(self):
+        """Ajout de colonne avec synchronisation DataFrame"""
         name, ok = QInputDialog.getText(self, "Ajouter une colonne", "Nom de la nouvelle colonne :")
         if ok and name:
-            self.add_column(name)
+            self.add_column(name)  # Utilise la méthode synchronisée
